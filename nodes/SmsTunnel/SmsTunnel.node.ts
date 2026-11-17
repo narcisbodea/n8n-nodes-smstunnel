@@ -10,8 +10,9 @@ import type {
 	JsonObject,
 } from 'n8n-workflow';
 import { NodeApiError, NodeConnectionTypes, NodeOperationError, sleep } from 'n8n-workflow';
+import { randomUUID } from 'crypto';
 
-import { checkBaseUrl, checkId, retryAfterMs } from './GenericFunctions';
+import { checkBaseUrl, checkId, retryAfterMs, WAIT_BUDGET_MS } from './GenericFunctions';
 
 /**
  * Splits a comma/semicolon/newline separated list of phone numbers into a clean array.
@@ -121,51 +122,116 @@ function errorJson(error: unknown): IDataObject {
 	return json;
 }
 
-/** How many times one request waits for SMSTunnel's per-minute limit (Retry-After) before the node gives up on it. */
+/** How many times one request waits for the per-minute limit before the node gives up on it. */
 const RATE_LIMIT_WAITS = 3;
 
+/** Each wait counts at least this much against the budget, so a Retry-After of 0 can't make the node ask forever. */
+const WAIT_FLOOR_MS = 1_000;
+
+/** The waiting left to one run of the node (WAIT_BUDGET_MS), and what it waited so far. */
+type WaitBudget = { leftMs: number; waitedMs: number };
+
 /**
- * One request that waits when SMSTunnel's per-minute limit for the key says so (a 429 with Retry-After: the request
- * wasn't handled, nothing was sent) and then asks again, up to RATE_LIMIT_WAITS times. A 429 without Retry-After is
- * the plan's daily limit and is not waited for. An HTTP error comes back as the NodeApiError n8n's helper makes.
+ * The Idempotency-Key of one text: made once per text and sent with every try of it. SMSTunnel answers a repeated key
+ * with the first answer instead of sending again (POST /sms/send and /sms/send-2fa, for 24 hours; idempotency.service.ts
+ * on the server).
+ */
+function idempotencyKey(): string {
+	return `n8n-smstunnel-${randomUUID()}`;
+}
+
+/** The NodeApiError for an answer that isn't 2xx: n8n's words for 4xx and 5xx, as its helper makes them. */
+function answerError(context: IExecuteFunctions, response: IN8nHttpFullResponse, itemIndex: number): NodeApiError {
+	const status = Number(response.statusCode);
+	const unexpected = status < 400 || status > 599;
+	const error = new NodeApiError(
+		context.getNode(),
+		{
+			message: `Request failed with status code ${status}`,
+			response: { status, data: response.body, headers: response.headers },
+		} as JsonObject,
+		{
+			httpCode: String(status),
+			itemIndex,
+			...(unexpected ? { message: `SMSTunnel answered with HTTP ${status}, which the node doesn't take as an answer` } : {}),
+		},
+	);
+	if (unexpected) {
+		// Set afterwards: NodeApiError takes the answer's own words over a description it is given.
+		error.description =
+			'Check that the Base URL in the SMSTunnel credentials is the address of the SMSTunnel API, such as https://smstunnel.io.';
+	}
+	return error;
+}
+
+/**
+ * One request. Only a 2xx answer counts; redirects are not followed (the key would go along). When SMSTunnel's
+ * per-minute limit for the key says to wait (a 429 with Retry-After: the request wasn't handled, nothing was sent),
+ * the node waits and asks again with the same request, Idempotency-Key included, at most RATE_LIMIT_WAITS times and
+ * within the run's WaitBudget. Nothing else is asked again: not a 429 without Retry-After (the plan's daily limit), not
+ * a timeout, a network error or a 5xx.
  */
 async function requestWaitingForLimit(
 	context: IExecuteFunctions,
 	options: IHttpRequestOptions,
 	itemIndex: number,
+	budget: WaitBudget,
 ): Promise<IDataObject> {
 	for (let waits = 0; ; waits++) {
 		const response = (await context.helpers.httpRequestWithAuthentication.call(context, 'smsTunnelApi', {
 			...options,
 			returnFullResponse: true,
 			ignoreHttpStatusErrors: true,
+			disableFollowRedirect: true,
 		})) as IN8nHttpFullResponse;
 		const status = Number(response.statusCode);
-		if (status < 400) return response.body as IDataObject;
+		if (status >= 200 && status < 300) return response.body as IDataObject;
 		const wait = status === 429 ? retryAfterMs(response.headers) : undefined;
-		if (wait !== undefined && waits < RATE_LIMIT_WAITS) {
+		if (wait === undefined) throw answerError(context, response, itemIndex);
+		const charge = Math.max(wait, WAIT_FLOOR_MS);
+		if (waits < RATE_LIMIT_WAITS && charge <= budget.leftMs) {
+			budget.leftMs -= charge;
+			budget.waitedMs += wait;
 			await sleep(wait);
 			continue;
 		}
-		// The same error n8n's helper throws for an HTTP error: its words, SMSTunnel's in the description and context.
-		throw new NodeApiError(
+		// Past what the node may wait: the 429 is the answer, with its Retry-After.
+		const seconds = Math.ceil(wait / 1000);
+		const said = String(
+			errorJson(answerError(context, response, itemIndex)).description ??
+				'SMSTunnel takes a limited number of requests a minute per API key',
+		);
+		const why =
+			waits >= RATE_LIMIT_WAITS
+				? `The node asked ${waits + 1} times for this request`
+				: `The node waits at most ${WAIT_BUDGET_MS / 1000} s in all in one run (it waited ${Math.round(budget.waitedMs / 1000)} s)`;
+		const limited = new NodeApiError(
 			context.getNode(),
 			{
 				message: `Request failed with status code ${status}`,
 				response: { status, data: response.body, headers: response.headers },
 			} as JsonObject,
-			{ httpCode: String(status), itemIndex },
+			{
+				httpCode: String(status),
+				itemIndex,
+				message: `The service is receiving too many requests from you (Retry-After: ${seconds} s)`,
+			},
 		);
+		// Set afterwards: NodeApiError takes SMSTunnel's own words over a description it is given.
+		limited.description = `${said}${/[.!?]$/.test(said) ? '' : '.'} ${why}: try again after ${seconds} s.`;
+		throw limited;
 	}
 }
 
 /**
- * Version 1's Send to Several Recipients, one text per number: a POST /api/v1/sms/send for each, in order, waiting
- * for the per-minute limit when it says so. The output keeps the shape of the single request it used to be,
- * { success: true, data: { messageIds, branded, count, remaining } }, with `refused` (the numbers whose text didn't
- * go out) and `error` (why) when some didn't. A number SMSTunnel refuses (400) is skipped; any other refusal (the
- * plan's daily limit, the key, the server) stops the list there, and the rest is refused as well, as the daily limit
- * did. When no text went out at all, the item fails with the first refusal, as the single request did.
+ * Version 1's Send to Several Recipients, one text per number: a POST /api/v1/sms/send for each, in order, each
+ * with its own Idempotency-Key, waiting for the per-minute limit when it says so (within the run's WaitBudget). The
+ * output keeps the shape of the single request it used to be, { success: true, data: { messageIds, branded, count,
+ * remaining } }, with `refused` (the numbers whose text didn't go out) and `error` (why) when some didn't. A text counts
+ * as sent only with a 2xx answer that has its messageId. A number SMSTunnel refuses (400), or an answer without a
+ * messageId, is listed and the next number goes; any other refusal (the plan's daily limit, the key, the server, the
+ * wait budget) stops the list there, and the rest is refused as well, as the daily limit did. When no text went out
+ * at all, the item fails with the first refusal, as the single request did.
  */
 async function sendToSeveral(
 	context: IExecuteFunctions,
@@ -173,6 +239,7 @@ async function sendToSeveral(
 	url: string,
 	recipients: string[],
 	fields: Record<string, unknown>,
+	budget: WaitBudget,
 ): Promise<IDataObject> {
 	const messageIds: string[] = [];
 	const refused: string[] = [];
@@ -180,23 +247,31 @@ async function sendToSeveral(
 	let branded = false;
 	let remaining: unknown;
 	let first: unknown;
+	const note = (why: string) => {
+		if (!reasons.includes(why)) reasons.push(why);
+	};
 	for (const [index, to] of recipients.entries()) {
 		try {
 			const answer = await requestWaitingForLimit(
 				context,
-				{ method: 'POST', url, json: true, body: { to, ...fields } },
+				{ method: 'POST', url, json: true, headers: { 'Idempotency-Key': idempotencyKey() }, body: { to, ...fields } },
 				itemIndex,
+				budget,
 			);
 			const data = (answer?.data ?? {}) as IDataObject;
 			const messageId = answer?.messageId ?? data.messageId;
-			if (typeof messageId === 'string') messageIds.push(messageId);
+			if (typeof messageId !== 'string' || !messageId) {
+				refused.push(to);
+				note("SMSTunnel's answer for this number had no messageId, so the node doesn't count its text as sent");
+				continue;
+			}
+			messageIds.push(messageId);
 			branded = branded || data.branded === true;
 			if (data.remaining !== undefined) remaining = data.remaining;
 		} catch (error) {
 			first = first ?? error;
 			const said = errorJson(error);
-			const why = String(said.description ?? said.error);
-			if (!reasons.includes(why)) reasons.push(why);
+			note(String(said.description ?? said.error));
 			if ((error as NodeApiError).httpCode === '400') {
 				refused.push(to);
 				continue;
@@ -205,7 +280,14 @@ async function sendToSeveral(
 			break;
 		}
 	}
-	if (messageIds.length === 0 && first !== undefined) {
+	if (messageIds.length === 0) {
+		if (first === undefined) {
+			throw new NodeOperationError(context.getNode(), "No text counted as sent: SMSTunnel's answers had no messageId", {
+				itemIndex,
+				description:
+					'Check that the Base URL in the SMSTunnel credentials is the address of the SMSTunnel API, such as https://smstunnel.io.',
+			});
+		}
 		throw first instanceof NodeApiError || first instanceof NodeOperationError
 			? first
 			: new NodeApiError(context.getNode(), first as JsonObject, { itemIndex });
@@ -623,9 +705,11 @@ export class SmsTunnel implements INodeType {
 
 		const resource = this.getNodeParameter('resource', 0) as string;
 		const operation = this.getNodeParameter('operation', 0) as string;
-		// Version 2 waits when SMSTunnel's per-minute limit says so, so a long list of items (one text each) gets through.
-		// Version 1 answers as it always did, except Send to Several Recipients (sendToSeveral).
+		// Version 2 waits when SMSTunnel's per-minute limit says so, so a longer list of items (one text each) gets
+		// through. Version 1 answers as it always did, except Send to Several Recipients (sendToSeveral).
 		const waitForLimit = this.getNode().typeVersion >= 2;
+		// One budget for all the waiting of this run: every item, every number.
+		const budget: WaitBudget = { leftMs: WAIT_BUDGET_MS, waitedMs: 0 };
 
 		// As an AI Agent's tool the node only sends one text or reads what is not private (NOT_AS_TOOL).
 		const refusedAsTool = runsAsTool(this) ? NOT_AS_TOOL[resource]?.[operation] : undefined;
@@ -714,10 +798,14 @@ export class SmsTunnel implements INodeType {
 						}
 
 						// One text per number, each its own POST /api/v1/sms/send.
-						const several = await sendToSeveral(this, i, `${baseUrl}/api/v1/sms/send`, recipients, {
-							message: this.getNodeParameter('message', i) as string,
-							...extra,
-						});
+						const several = await sendToSeveral(
+							this,
+							i,
+							`${baseUrl}/api/v1/sms/send`,
+							recipients,
+							{ message: this.getNodeParameter('message', i) as string, ...extra },
+							budget,
+						);
 						returnData.push({ json: several, pairedItem: { item: i } });
 						continue;
 					} else if (operation === 'send2fa') {
@@ -793,12 +881,16 @@ export class SmsTunnel implements INodeType {
 					method,
 					url: `${baseUrl}${endpoint}`,
 					json: true,
+					// A redirect would take the API key along.
+					disableFollowRedirect: true,
+					// A text, now or scheduled: one Idempotency-Key, kept for every try of it.
+					...(method === 'POST' ? { headers: { 'Idempotency-Key': idempotencyKey() } } : {}),
 					...(body !== undefined ? { body } : {}),
 					...(qs !== undefined ? { qs } : {}),
 				};
 
 				const response = waitForLimit
-					? await requestWaitingForLimit(this, options, i)
+					? await requestWaitingForLimit(this, options, i, budget)
 					: await this.helpers.httpRequestWithAuthentication.call(this, 'smsTunnelApi', options);
 
 				returnData.push({

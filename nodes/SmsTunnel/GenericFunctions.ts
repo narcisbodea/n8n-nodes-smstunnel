@@ -72,13 +72,16 @@ export function isUnderBase(target: string, base: string): boolean {
 	return path === '' || url.pathname === path || url.pathname.startsWith(`${path}/`);
 }
 
-/** The longest the node waits on one Retry-After, in ms: SMSTunnel's limits count per minute. */
-export const MAX_RETRY_AFTER_MS = 65_000;
+/**
+ * All the waiting one run of the node may do for SMSTunnel's per-minute limit, in ms, shared by every item and every
+ * number: a wait that would go past it doesn't happen, and the 429 is the answer.
+ */
+export const WAIT_BUDGET_MS = 60_000;
 
 /**
- * How long a 429 says to wait before asking again, in ms (Retry-After, in seconds or as an HTTP date, at most
- * MAX_RETRY_AFTER_MS), or undefined when it doesn't say. SMSTunnel's per-minute limits answer with Retry-After, and
- * then nothing was sent; the plan's daily limit answers without it.
+ * How long a 429 says to wait before asking again, in ms (Retry-After, in seconds or as an HTTP date; a date in the
+ * past is 0), or undefined when it doesn't say. SMSTunnel's per-minute limits answer with Retry-After, and then
+ * nothing was sent; the plan's daily limit answers without it.
  */
 export function retryAfterMs(headers: unknown, now = Date.now()): number | undefined {
 	if (!headers || typeof headers !== 'object') return undefined;
@@ -88,7 +91,7 @@ export function retryAfterMs(headers: unknown, now = Date.now()): number | undef
 	const text = String(raw).trim();
 	const seconds = /^\d+(\.\d+)?$/.test(text) ? Number(text) : (Date.parse(text) - now) / 1000;
 	if (!Number.isFinite(seconds)) return undefined;
-	return Math.min(Math.max(seconds, 0) * 1000, MAX_RETRY_AFTER_MS);
+	return Math.max(seconds, 0) * 1000;
 }
 
 /** SMSTunnel's ids (messageId, scheduledId) are MongoDB ObjectIds: 24 hexadecimal characters. */

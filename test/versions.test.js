@@ -4,7 +4,7 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { NodeApiError, NodeOperationError, Workflow } = require('n8n-workflow');
 const { SmsTunnel } = require('../dist/nodes/SmsTunnel/SmsTunnel.node.js');
-const { retryAfterMs, MAX_RETRY_AFTER_MS } = require('../dist/nodes/SmsTunnel/GenericFunctions.js');
+const { retryAfterMs } = require('../dist/nodes/SmsTunnel/GenericFunctions.js');
 const { nodeOf, run } = require('./harness');
 
 const N1 = '+14155550101';
@@ -193,7 +193,7 @@ describe('version 1: Send to Several Recipients', () => {
 		const { output, calls } = await run(several(`${N1},${N2},${N3}`), (options) => (options.body.to === N1 ? sent('a1') : perMinute));
 		assert.equal(calls.length, 1 + 4);
 		assert.deepEqual(output[0].data.refused, [N2, N3]);
-		assert.equal(output[0].data.error, 'ThrottlerException: Too Many Requests');
+		assert.equal(output[0].data.error, 'ThrottlerException: Too Many Requests. The node asked 4 times for this request: try again after 0 s.');
 	});
 
 	it('still checks the list before anything is sent', async () => {
@@ -275,13 +275,13 @@ describe('version 2', () => {
 });
 
 describe('Retry-After', () => {
-	it('is read in seconds or as an HTTP date, at most 65 s', () => {
+	it('is read in seconds or as an HTTP date (the wait budget of the run decides whether to wait)', () => {
 		const now = Date.parse('2026-11-17T12:00:00Z');
 		assert.equal(retryAfterMs({ 'retry-after': '0' }, now), 0);
 		assert.equal(retryAfterMs({ 'retry-after': '12' }, now), 12000);
 		assert.equal(retryAfterMs({ 'Retry-After': 7 }, now), 7000);
 		assert.equal(retryAfterMs({ 'retry-after': ['3'] }, now), 3000);
-		assert.equal(retryAfterMs({ 'retry-after': '600' }, now), MAX_RETRY_AFTER_MS);
+		assert.equal(retryAfterMs({ 'retry-after': '600' }, now), 600000);
 		assert.equal(retryAfterMs({ 'retry-after': 'Tue, 17 Nov 2026 12:00:30 GMT' }, now), 30000);
 		assert.equal(retryAfterMs({ 'retry-after': 'Tue, 17 Nov 2026 11:59:00 GMT' }, now), 0);
 		for (const headers of [{}, { 'retry-after': 'soon' }, { 'retry-after': '' }, undefined, null, 'x']) {

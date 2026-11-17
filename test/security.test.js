@@ -130,6 +130,8 @@ describe("the credentials' authenticate()", () => {
 		});
 		assert.deepEqual(sent.headers, { 'Content-Type': 'application/json', 'X-API-Key': KEY });
 		assert.equal(sent.url, 'https://smstunnel.io/api/v1/sms/send');
+		// A redirect would take the key along.
+		assert.equal(sent.disableFollowRedirect, true);
 	});
 
 	it("also for the credentials' Test, which gives baseURL and url apart", async () => {

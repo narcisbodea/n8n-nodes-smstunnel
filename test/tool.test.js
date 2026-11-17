@@ -73,7 +73,7 @@ describe('as an AI tool', () => {
 
 	it('the same operations all run in a normal workflow step', async () => {
 		for (const [, params] of REFUSED) {
-			const { calls } = await run(params, () => [200, { success: true, data: { messageIds: ['m1'], count: 1 } }]);
+			const { calls } = await run(params, () => [200, { success: true, messageId: ID, data: { messageId: ID } }]);
 			assert.ok(calls.length >= 1, params.operation);
 		}
 	});

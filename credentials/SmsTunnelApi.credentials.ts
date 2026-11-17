@@ -47,7 +47,8 @@ export class SmsTunnelApi implements ICredentialType {
 
 	/**
 	 * Adds the key as the X-API-Key header, and only to a request for the Base URL (checked as the node checks it):
-	 * the node, the Test of these credentials and an HTTP Request node that uses them all come through here.
+	 * the node, the Test of these credentials and an HTTP Request node that uses them all come through here. Redirects
+	 * are not followed: the key would go along to wherever they point.
 	 */
 	authenticate: IAuthenticate = async (credentials, requestOptions) => {
 		const checked = checkBaseUrl(credentials.baseUrl);
@@ -57,6 +58,7 @@ export class SmsTunnelApi implements ICredentialType {
 		}
 		return {
 			...requestOptions,
+			disableFollowRedirect: true,
 			headers: { ...requestOptions.headers, 'X-API-Key': String(credentials.apiKey ?? '') },
 		};
 	};

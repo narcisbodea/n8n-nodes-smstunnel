@@ -74,7 +74,8 @@ async function run(
 				if (sent.returnFullResponse && sent.ignoreHttpStatusErrors) {
 					return { statusCode: status, statusMessage: '', headers, body };
 				}
-				if (status >= 400) throw apiError(node, status, body, headers);
+				// axios takes only a 2xx as an answer (and the node follows no redirects).
+				if (status < 200 || status > 299) throw apiError(node, status, body, headers);
 				return sent.returnFullResponse ? { statusCode: status, statusMessage: '', headers, body } : body;
 			},
 		},
