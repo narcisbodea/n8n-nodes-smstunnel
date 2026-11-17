@@ -161,6 +161,24 @@ describe("the credentials' authenticate()", () => {
 		}
 	});
 
+	it("handles the older request format of n8n's HTTP Request node (uri instead of url)", async () => {
+		// Found running n8n 2.48.4: the HTTP Request node signs { uri }, which an url-only check refused.
+		const sent = await authenticate('http://127.0.0.1:3172', { uri: 'http://127.0.0.1:3172/api/v1/account/usage', method: 'GET' });
+		assert.equal(sent.headers['X-API-Key'], KEY);
+		// Redirects off in both formats: n8n keeps X-API-Key on a redirect to another host.
+		assert.equal(sent.disableFollowRedirect, true);
+		assert.equal(sent.followRedirect, false);
+		assert.equal(sent.followAllRedirects, false);
+		for (const options of [
+			{ uri: 'https://evil.example.test/api' },
+			{ url: 'https://smstunnel.io/api/v1/devices', uri: 'https://evil.example.test/api' },
+			{ url: 'https://evil.example.test/api', uri: 'https://smstunnel.io/api/v1/devices' },
+			{ method: 'GET' },
+		]) {
+			await assert.rejects(authenticate('https://smstunnel.io', options), /only sent to the Base URL/, JSON.stringify(options));
+		}
+	});
+
 	it('refuses everything when the Base URL itself is refused', async () => {
 		await assert.rejects(
 			authenticate('http://smstunnel.io', { url: 'http://smstunnel.io/api/v1/devices' }),

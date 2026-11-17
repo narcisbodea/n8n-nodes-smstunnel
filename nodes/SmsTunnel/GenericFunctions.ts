@@ -57,6 +57,19 @@ export function requestTarget(options: Pick<IHttpRequestOptions, 'url' | 'baseUR
 	return `${String(options.baseURL).replace(/\/+$/, '')}/${url.replace(/^\/+/, '')}`;
 }
 
+/**
+ * Every address a request names: its `url`, and its `uri` for the older request format (n8n's HTTP Request node
+ * signs requests that way), each joined with `baseURL`. A request that names none gives [''], which no Base URL
+ * contains.
+ */
+export function requestTargets(options: { url?: unknown; uri?: unknown; baseURL?: unknown }): string[] {
+	const named = [options.url, options.uri].filter((value) => value !== undefined && value !== null && value !== '');
+	if (named.length === 0) return [''];
+	return named.map((value) =>
+		requestTarget({ url: String(value), baseURL: options.baseURL === undefined ? undefined : String(options.baseURL) }),
+	);
+}
+
 /** Whether `target` is `base` or below it: the same origin, inside its path, without a user name or password. */
 export function isUnderBase(target: string, base: string): boolean {
 	let url: URL;

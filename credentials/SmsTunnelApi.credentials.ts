@@ -2,11 +2,15 @@ import type {
 	IAuthenticate,
 	ICredentialTestRequest,
 	ICredentialType,
+	IHttpRequestOptions,
 	Icon,
 	INodeProperties,
 } from 'n8n-workflow';
 
-import { checkBaseUrl, isUnderBase, requestTarget } from '../nodes/SmsTunnel/GenericFunctions';
+import { checkBaseUrl, isUnderBase, requestTargets } from '../nodes/SmsTunnel/GenericFunctions';
+
+/** The older request format some nodes sign through (n8n's HTTP Request node): `uri`, and its redirect switches. */
+type AnyRequestOptions = IHttpRequestOptions & { uri?: string; followRedirect?: boolean; followAllRedirects?: boolean };
 
 export class SmsTunnelApi implements ICredentialType {
 	name = 'smsTunnelApi';
@@ -46,21 +50,26 @@ export class SmsTunnelApi implements ICredentialType {
 	];
 
 	/**
-	 * Adds the key as the X-API-Key header, and only to a request for the Base URL (checked as the node checks it):
-	 * the node, the Test of these credentials and an HTTP Request node that uses them all come through here. Redirects
-	 * are not followed: the key would go along to wherever they point.
+	 * Adds the key as the X-API-Key header, and only to a request whose every address (url, and uri in the older
+	 * format) is the Base URL or below it, checked as the node checks it: the node, the Test of these credentials and an
+	 * HTTP Request node that uses them all come through here. Redirects are not followed, in either format: n8n drops
+	 * Authorization and cookies on a redirect to another host, but X-API-Key would go along.
 	 */
 	authenticate: IAuthenticate = async (credentials, requestOptions) => {
 		const checked = checkBaseUrl(credentials.baseUrl);
 		if (!checked.ok) throw new Error(`${checked.message}. ${checked.description}`);
-		if (!isUnderBase(requestTarget(requestOptions), checked.base)) {
+		const request = requestOptions as AnyRequestOptions;
+		if (!requestTargets(request).every((target) => isUnderBase(target, checked.base))) {
 			throw new Error(`The SMSTunnel API key is only sent to the Base URL of its credentials (${checked.base}).`);
 		}
-		return {
-			...requestOptions,
+		const signed: AnyRequestOptions = {
+			...request,
 			disableFollowRedirect: true,
-			headers: { ...requestOptions.headers, 'X-API-Key': String(credentials.apiKey ?? '') },
+			followRedirect: false,
+			followAllRedirects: false,
+			headers: { ...request.headers, 'X-API-Key': String(credentials.apiKey ?? '') },
 		};
+		return signed;
 	};
 
 	test: ICredentialTestRequest = {
