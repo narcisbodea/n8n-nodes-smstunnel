@@ -42,7 +42,7 @@
     "test": "npm run build && node --test \"test/*.test.js\"",
     "prepublishOnly": "n8n-node prerelease",
     "test:e2e": "node e2e/local-api.mjs",
-    "scan": "scan-community-package ."
+    "scan": "npx --yes @n8n/scan-community-package@0.44.0 ."
   },
   "files": [
     "dist"
@@ -59,7 +59,6 @@
   },
   "devDependencies": {
     "@n8n/node-cli": "^0.57.3",
-    "@n8n/scan-community-package": "0.44.0",
     "@types/node": "^20.19.43",
     "eslint": "^9.39.4",
     "n8n-workflow": "*",
