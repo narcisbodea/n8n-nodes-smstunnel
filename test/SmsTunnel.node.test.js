@@ -1,14 +1,10 @@
-// The SMSTunnel node against a stand-in for n8n's execute context: every HTTP call is recorded and answered here, and
-// an error status is thrown as n8n's own helper throws it (a NodeApiError around the HTTP error). Runs on dist/
-// (npm test builds it first), what the package ships.
+// The SMSTunnel node against a stand-in for n8n's execute context (harness.js): every HTTP call is recorded and
+// answered there. Runs on dist/ (npm test builds it first), what the package ships.
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { NodeApiError, NodeOperationError } = require('n8n-workflow');
 const { SmsTunnel } = require('../dist/nodes/SmsTunnel/SmsTunnel.node.js');
-
-const KEY = 'sk_' + 'live_' + '0123456789abcdef0123456789abcdef';
-const ID = '6735a0c4e1d9e1b7b54cf994';
-const NODE = { id: 'n1', name: 'SMSTunnel', type: 'n8n-nodes-smstunnel.smsTunnel', typeVersion: 1, position: [0, 0], parameters: {} };
+const { ID, run } = require('./harness');
 
 const scheduledText = (fields = {}) => ({
 	id: ID,
@@ -22,44 +18,6 @@ const scheduledText = (fields = {}) => ({
 	createdAt: '2026-11-15T12:00:00.000Z',
 	...fields,
 });
-
-/** What axios throws for an error status, as n8n's httpRequestWithAuthentication wraps it. */
-class AxiosError extends Error {}
-function apiError(status, body) {
-	const cause = new AxiosError(`Request failed with status code ${status}`);
-	cause.isAxiosError = true;
-	cause.response = { status, data: body, headers: {} };
-	return new NodeApiError(NODE, cause);
-}
-
-/** Runs the node once with `params` for every item; `answer(options)` gives [status, body] for each call. */
-async function run(params, answer = () => [200, { success: true }], { items = 1, timeZone = 'Europe/Bucharest', continueOnFail = false } = {}) {
-	const calls = [];
-	const context = {
-		getInputData: () => Array.from({ length: items }, () => ({ json: {} })),
-		getCredentials: async () => ({ apiKey: KEY, baseUrl: 'https://smstunnel.test/' }),
-		getNodeParameter(name, itemIndex, fallback) {
-			const value = typeof params === 'function' ? params(itemIndex)[name] : params[name];
-			if (value !== undefined) return value;
-			if (arguments.length >= 3) return fallback;
-			throw new Error(`Could not get parameter "${name}"`);
-		},
-		getNode: () => NODE,
-		getTimezone: () => timeZone,
-		continueOnFail: () => continueOnFail,
-		helpers: {
-			async httpRequestWithAuthentication(credentialsType, options) {
-				assert.equal(credentialsType, 'smsTunnelApi');
-				calls.push(options);
-				const [status, body] = await answer(options);
-				if (status >= 400) throw apiError(status, body);
-				return body;
-			},
-		},
-	};
-	const [output] = await new SmsTunnel().execute.call(context);
-	return { output: output.map((item) => item.json), calls };
-}
 
 const send = (sendAt, extra = {}) => ({
 	resource: 'message',
@@ -156,10 +114,10 @@ describe('Send with Send At', () => {
 	});
 
 	it('is left alone by the operations that send nothing', async () => {
-		const params = { resource: 'message', operation: 'getStatus', messageId: 'm1', additionalFields: { sendAt: 'not a date' } };
-		const { calls } = await run(params, () => [200, { success: true, data: { id: 'm1', status: 'sent' } }]);
+		const params = { resource: 'message', operation: 'getStatus', messageId: ID, additionalFields: { sendAt: 'not a date' } };
+		const { calls } = await run(params, () => [200, { success: true, data: { id: ID, status: 'sent' } }]);
 		assert.equal(calls[0].method, 'GET');
-		assert.equal(calls[0].url, 'https://smstunnel.test/api/v1/sms/status/m1');
+		assert.equal(calls[0].url, `https://smstunnel.test/api/v1/sms/status/${ID}`);
 	});
 });
 
@@ -192,8 +150,12 @@ describe('Scheduled Text', () => {
 		assert.equal(cancel.calls[0].body, undefined);
 		assert.equal(cancel.output[0].data.status, 'canceled');
 
-		const odd = await run({ resource: 'scheduledText', operation: 'get', scheduledId: 'a/b?c' }, () => [200, { success: true }]);
-		assert.equal(odd.calls[0].url, 'https://smstunnel.test/api/v1/sms/scheduled/a%2Fb%3Fc');
+		// Anything but SMSTunnel's own id format is refused before anything is asked.
+		const odd = await run({ resource: 'scheduledText', operation: 'get', scheduledId: 'a/b?c' }, () => [200, { success: true }], {
+			continueOnFail: true,
+		});
+		assert.match(odd.output[0].error, /The Scheduled Text ID is not an ID from SMSTunnel/);
+		assert.equal(odd.calls.length, 0);
 	});
 
 	it('an empty ID stops the item before anything is asked', async () => {

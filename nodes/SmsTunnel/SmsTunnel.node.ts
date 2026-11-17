@@ -10,6 +10,8 @@ import type {
 } from 'n8n-workflow';
 import { NodeApiError, NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 
+import { checkBaseUrl, checkId } from './GenericFunctions';
+
 /**
  * Splits a comma/semicolon/newline separated list of phone numbers into a clean array.
  */
@@ -420,7 +422,14 @@ export class SmsTunnel implements INodeType {
 		const returnData: INodeExecutionData[] = [];
 
 		const credentials = await this.getCredentials('smsTunnelApi');
-		const baseUrl = String(credentials.baseUrl ?? 'https://smstunnel.io').replace(/\/+$/, '');
+		// The API key goes to this address: https:// only (http:// for this computer), nothing but origin and path.
+		const checkedBase = checkBaseUrl(credentials.baseUrl);
+		if (!checkedBase.ok) {
+			throw new NodeOperationError(this.getNode(), checkedBase.message, {
+				description: checkedBase.description,
+			});
+		}
+		const baseUrl = checkedBase.base;
 
 		const resource = this.getNodeParameter('resource', 0) as string;
 		const operation = this.getNodeParameter('operation', 0) as string;
@@ -503,7 +512,15 @@ export class SmsTunnel implements INodeType {
 						};
 					} else if (operation === 'getStatus') {
 						method = 'GET';
-						const messageId = this.getNodeParameter('messageId', i) as string;
+						// Only SMSTunnel's own id format goes into the path.
+						const messageId = checkId(this.getNodeParameter('messageId', i));
+						if (!messageId) {
+							throw new NodeOperationError(this.getNode(), 'The Message ID is not an ID from SMSTunnel', {
+								itemIndex: i,
+								description:
+									'Use the messageId that a Send or Send 2FA Code returned: 24 characters, digits and the letters a to f, such as 6735a0c4e1d9e1b7b54cf994.',
+							});
+						}
 						endpoint = `/api/v1/sms/status/${encodeURIComponent(messageId)}`;
 					} else if (operation === 'getReceived') {
 						method = 'GET';
@@ -525,13 +542,22 @@ export class SmsTunnel implements INodeType {
 							limit: this.getNodeParameter('limit', i, 50) as number,
 						};
 					} else if (operation === 'get' || operation === 'cancel') {
-						const scheduledId = String(this.getNodeParameter('scheduledId', i, '') ?? '').trim();
-						if (!scheduledId) {
+						const given = String(this.getNodeParameter('scheduledId', i, '') ?? '').trim();
+						if (!given) {
 							throw new NodeOperationError(
 								this.getNode(),
 								'The Scheduled Text ID is empty: use the scheduledId that Send with Send At returned.',
 								{ itemIndex: i },
 							);
+						}
+						// Only SMSTunnel's own id format goes into the path.
+						const scheduledId = checkId(given);
+						if (!scheduledId) {
+							throw new NodeOperationError(this.getNode(), 'The Scheduled Text ID is not an ID from SMSTunnel', {
+								itemIndex: i,
+								description:
+									'Use the scheduledId that Send with Send At returned: 24 characters, digits and the letters a to f, such as 6735a0c4e1d9e1b7b54cf994.',
+							});
 						}
 						endpoint = `/api/v1/sms/scheduled/${encodeURIComponent(scheduledId)}`;
 						if (operation === 'cancel') method = 'DELETE';

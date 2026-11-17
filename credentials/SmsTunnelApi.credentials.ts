@@ -1,10 +1,12 @@
 import type {
-	IAuthenticateGeneric,
+	IAuthenticate,
 	ICredentialTestRequest,
 	ICredentialType,
 	Icon,
 	INodeProperties,
 } from 'n8n-workflow';
+
+import { checkBaseUrl, isUnderBase, requestTarget } from '../nodes/SmsTunnel/GenericFunctions';
 
 export class SmsTunnelApi implements ICredentialType {
 	name = 'smsTunnelApi';
@@ -39,22 +41,29 @@ export class SmsTunnelApi implements ICredentialType {
 			default: 'https://smstunnel.io',
 			required: true,
 			description:
-				'Base URL of the SMSTunnel server. Change this only if you run a self-hosted instance.',
+				'Your API key is sent to this address. Keep https://smstunnel.io unless you run your own SMSTunnel server, whose address must start with https://.',
 		},
 	];
 
-	authenticate: IAuthenticateGeneric = {
-		type: 'generic',
-		properties: {
-			headers: {
-				'X-API-Key': '={{$credentials.apiKey}}',
-			},
-		},
+	/**
+	 * Adds the key as the X-API-Key header, and only to a request for the Base URL (checked as the node checks it):
+	 * the node, the Test of these credentials and an HTTP Request node that uses them all come through here.
+	 */
+	authenticate: IAuthenticate = async (credentials, requestOptions) => {
+		const checked = checkBaseUrl(credentials.baseUrl);
+		if (!checked.ok) throw new Error(`${checked.message}. ${checked.description}`);
+		if (!isUnderBase(requestTarget(requestOptions), checked.base)) {
+			throw new Error(`The SMSTunnel API key is only sent to the Base URL of its credentials (${checked.base}).`);
+		}
+		return {
+			...requestOptions,
+			headers: { ...requestOptions.headers, 'X-API-Key': String(credentials.apiKey ?? '') },
+		};
 	};
 
 	test: ICredentialTestRequest = {
 		request: {
-			baseURL: '={{$credentials.baseUrl.replace(new RegExp("/$"), "")}}',
+			baseURL: '={{($credentials.baseUrl || "https://smstunnel.io").trim().replace(new RegExp("/+$"), "")}}',
 			url: '/api/v1/account/usage',
 			method: 'GET',
 		},
