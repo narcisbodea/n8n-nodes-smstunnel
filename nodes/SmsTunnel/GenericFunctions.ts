@@ -72,6 +72,25 @@ export function isUnderBase(target: string, base: string): boolean {
 	return path === '' || url.pathname === path || url.pathname.startsWith(`${path}/`);
 }
 
+/** The longest the node waits on one Retry-After, in ms: SMSTunnel's limits count per minute. */
+export const MAX_RETRY_AFTER_MS = 65_000;
+
+/**
+ * How long a 429 says to wait before asking again, in ms (Retry-After, in seconds or as an HTTP date, at most
+ * MAX_RETRY_AFTER_MS), or undefined when it doesn't say. SMSTunnel's per-minute limits answer with Retry-After, and
+ * then nothing was sent; the plan's daily limit answers without it.
+ */
+export function retryAfterMs(headers: unknown, now = Date.now()): number | undefined {
+	if (!headers || typeof headers !== 'object') return undefined;
+	const entry = Object.entries(headers as Record<string, unknown>).find(([name]) => name.toLowerCase() === 'retry-after');
+	const raw = Array.isArray(entry?.[1]) ? entry?.[1][0] : entry?.[1];
+	if (typeof raw !== 'string' && typeof raw !== 'number') return undefined;
+	const text = String(raw).trim();
+	const seconds = /^\d+(\.\d+)?$/.test(text) ? Number(text) : (Date.parse(text) - now) / 1000;
+	if (!Number.isFinite(seconds)) return undefined;
+	return Math.min(Math.max(seconds, 0) * 1000, MAX_RETRY_AFTER_MS);
+}
+
 /** SMSTunnel's ids (messageId, scheduledId) are MongoDB ObjectIds: 24 hexadecimal characters. */
 const OBJECT_ID = /^[0-9a-f]{24}$/i;
 

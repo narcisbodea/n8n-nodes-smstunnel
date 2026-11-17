@@ -102,7 +102,9 @@ describe('Send with Send At', () => {
 	it('is refused on the sign-in code and several-recipient operations, which send right away', async () => {
 		// The several-recipient operation and its To field, found by what n8n shows (their stored names are older).
 		const { properties } = new SmsTunnel().description;
-		const messageOperations = properties.find((p) => p.name === 'operation' && p.displayOptions.show.resource[0] === 'message');
+		const messageOperations = properties.find(
+			(p) => p.name === 'operation' && p.displayOptions.show.resource[0] === 'message' && p.displayOptions.show['@version'][0] === 1,
+		);
 		const several = messageOperations.options.find((o) => o.name === 'Send to Several Recipients').value;
 		const severalTo = properties.find((p) => p.displayName === 'To' && p.displayOptions.show.operation.join() === several).name;
 		for (const operation of ['send2fa', several]) {

@@ -3,14 +3,15 @@ import type {
 	IExecuteFunctions,
 	IHttpRequestMethods,
 	IHttpRequestOptions,
+	IN8nHttpFullResponse,
 	INodeExecutionData,
 	INodeType,
 	INodeTypeDescription,
 	JsonObject,
 } from 'n8n-workflow';
-import { NodeApiError, NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
+import { NodeApiError, NodeConnectionTypes, NodeOperationError, sleep } from 'n8n-workflow';
 
-import { checkBaseUrl, checkId } from './GenericFunctions';
+import { checkBaseUrl, checkId, retryAfterMs } from './GenericFunctions';
 
 /**
  * Splits a comma/semicolon/newline separated list of phone numbers into a clean array.
@@ -120,6 +121,107 @@ function errorJson(error: unknown): IDataObject {
 	return json;
 }
 
+/** How many times one request waits for SMSTunnel's per-minute limit (Retry-After) before the node gives up on it. */
+const RATE_LIMIT_WAITS = 3;
+
+/**
+ * One request that waits when SMSTunnel's per-minute limit for the key says so (a 429 with Retry-After: the request
+ * wasn't handled, nothing was sent) and then asks again, up to RATE_LIMIT_WAITS times. A 429 without Retry-After is
+ * the plan's daily limit and is not waited for. An HTTP error comes back as the NodeApiError n8n's helper makes.
+ */
+async function requestWaitingForLimit(
+	context: IExecuteFunctions,
+	options: IHttpRequestOptions,
+	itemIndex: number,
+): Promise<IDataObject> {
+	for (let waits = 0; ; waits++) {
+		const response = (await context.helpers.httpRequestWithAuthentication.call(context, 'smsTunnelApi', {
+			...options,
+			returnFullResponse: true,
+			ignoreHttpStatusErrors: true,
+		})) as IN8nHttpFullResponse;
+		const status = Number(response.statusCode);
+		if (status < 400) return response.body as IDataObject;
+		const wait = status === 429 ? retryAfterMs(response.headers) : undefined;
+		if (wait !== undefined && waits < RATE_LIMIT_WAITS) {
+			await sleep(wait);
+			continue;
+		}
+		// The same error n8n's helper throws for an HTTP error: its words, SMSTunnel's in the description and context.
+		throw new NodeApiError(
+			context.getNode(),
+			{
+				message: `Request failed with status code ${status}`,
+				response: { status, data: response.body, headers: response.headers },
+			} as JsonObject,
+			{ httpCode: String(status), itemIndex },
+		);
+	}
+}
+
+/**
+ * Version 1's Send to Several Recipients, one text per number: a POST /api/v1/sms/send for each, in order, waiting
+ * for the per-minute limit when it says so. The output keeps the shape of the single request it used to be,
+ * { success: true, data: { messageIds, branded, count, remaining } }, with `refused` (the numbers whose text didn't
+ * go out) and `error` (why) when some didn't. A number SMSTunnel refuses (400) is skipped; any other refusal (the
+ * plan's daily limit, the key, the server) stops the list there, and the rest is refused as well, as the daily limit
+ * did. When no text went out at all, the item fails with the first refusal, as the single request did.
+ */
+async function sendToSeveral(
+	context: IExecuteFunctions,
+	itemIndex: number,
+	url: string,
+	recipients: string[],
+	fields: Record<string, unknown>,
+): Promise<IDataObject> {
+	const messageIds: string[] = [];
+	const refused: string[] = [];
+	const reasons: string[] = [];
+	let branded = false;
+	let remaining: unknown;
+	let first: unknown;
+	for (const [index, to] of recipients.entries()) {
+		try {
+			const answer = await requestWaitingForLimit(
+				context,
+				{ method: 'POST', url, json: true, body: { to, ...fields } },
+				itemIndex,
+			);
+			const data = (answer?.data ?? {}) as IDataObject;
+			const messageId = answer?.messageId ?? data.messageId;
+			if (typeof messageId === 'string') messageIds.push(messageId);
+			branded = branded || data.branded === true;
+			if (data.remaining !== undefined) remaining = data.remaining;
+		} catch (error) {
+			first = first ?? error;
+			const said = errorJson(error);
+			const why = String(said.description ?? said.error);
+			if (!reasons.includes(why)) reasons.push(why);
+			if ((error as NodeApiError).httpCode === '400') {
+				refused.push(to);
+				continue;
+			}
+			refused.push(...recipients.slice(index));
+			break;
+		}
+	}
+	if (messageIds.length === 0 && first !== undefined) {
+		throw first instanceof NodeApiError || first instanceof NodeOperationError
+			? first
+			: new NodeApiError(context.getNode(), first as JsonObject, { itemIndex });
+	}
+	return {
+		success: true,
+		data: {
+			messageIds,
+			branded,
+			count: messageIds.length,
+			remaining,
+			...(refused.length > 0 ? { refused, error: reasons.join('; ') } : {}),
+		},
+	};
+}
+
 /**
  * What an AI Agent may not do with this node as its tool, and why: everything else only sends one text, or reads
  * nothing private (a text's status, the phones, the usage, the texts this key scheduled).
@@ -168,8 +270,13 @@ export class SmsTunnel implements INodeType {
 		// One icon that reads well on both themes (white bubble on a blue tile).
 		icon: { light: 'file:smstunnel.svg', dark: 'file:smstunnel.svg' },
 		group: ['output'],
-		version: 1,
-		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
+		// Version 2 sends one text per item: it has no Send to Several Recipients. Workflows saved with version 1 keep
+		// it, and new nodes are version 2.
+		version: [1, 2],
+		defaultVersion: 2,
+		// The operation and resource as n8n shows them, not their stored values.
+		subtitle:
+			'={{ ({ send: "Send", send2fa: "Send 2FA Code", sendBulk: "Send to Several Recipients", getStatus: "Get Status", getReceived: "Get Received", getUsage: "Get Usage", getAll: "Get Many", get: "Get", cancel: "Cancel" })[$parameter["operation"]] + ": " + ({ message: "Message", account: "Account", device: "Device", scheduledText: "Scheduled Text" })[$parameter["resource"]] }}',
 		description: 'Send SMS through your own Android phone via SMSTunnel',
 		defaults: {
 			name: 'SMSTunnel',
@@ -200,12 +307,50 @@ export class SmsTunnel implements INodeType {
 			},
 
 			// ─────────────────────────── Operations ───────────────────────────
+			// Message, version 2: one text per item, so no Send to Several Recipients.
 			{
 				displayName: 'Operation',
 				name: 'operation',
 				type: 'options',
 				noDataExpression: true,
-				displayOptions: { show: { resource: ['message'] } },
+				displayOptions: { show: { resource: ['message'], '@version': [{ _cnd: { gte: 2 } }] } },
+				options: [
+					{
+						name: 'Get Received',
+						value: 'getReceived',
+						description: 'Get received SMS synced from your phone (only if sync is on in the app)',
+						action: 'Get received messages',
+						displayOptions: HIDDEN_AS_TOOL,
+					},
+					{
+						name: 'Get Status',
+						value: 'getStatus',
+						description: 'Get the delivery status of a sent message',
+						action: 'Get a message status',
+					},
+					{
+						name: 'Send',
+						value: 'send',
+						description: 'Send an SMS to a single recipient, now or at a later time',
+						action: 'Send an SMS',
+					},
+					{
+						name: 'Send 2FA Code',
+						value: 'send2fa',
+						description: 'Send a one-time verification code (uses the 2FA quota)',
+						action: 'Send a 2FA code',
+						displayOptions: HIDDEN_AS_TOOL,
+					},
+				],
+				default: 'send',
+			},
+			// Message, version 1: as saved workflows have it, with Send to Several Recipients.
+			{
+				displayName: 'Operation',
+				name: 'operation',
+				type: 'options',
+				noDataExpression: true,
+				displayOptions: { show: { resource: ['message'], '@version': [1] } },
 				options: [
 					{
 						name: 'Get Received',
@@ -234,10 +379,10 @@ export class SmsTunnel implements INodeType {
 						displayOptions: HIDDEN_AS_TOOL,
 					},
 					{
-						// Display text only. The value stays 'sendBulk' because saved workflows store it.
+						// Version 1 only. Display text only: the value stays 'sendBulk' because saved workflows store it.
 						name: 'Send to Several Recipients',
 						value: 'sendBulk',
-						description: 'Send the same SMS to up to 100 recipients in one request',
+						description: 'Send the same SMS to up to 100 numbers, one text to each',
 						action: 'Send an SMS to several recipients',
 						displayOptions: HIDDEN_AS_TOOL,
 					},
@@ -319,7 +464,7 @@ export class SmsTunnel implements INodeType {
 				displayOptions: { show: { resource: ['message'], operation: ['send', 'send2fa'] } },
 			},
 
-			// ─────────────────────────── message: sendBulk ───────────────────────────
+			// ─────────────────────────── message: sendBulk (version 1) ───────────────────────────
 			{
 				displayName: 'To',
 				name: 'toBulk',
@@ -328,8 +473,8 @@ export class SmsTunnel implements INodeType {
 				default: '',
 				placeholder: '+40712345678, +40787654321',
 				description:
-					'Recipient phone numbers, separated by comma, semicolon or newline. Maximum 100 per request.',
-				displayOptions: { show: { resource: ['message'], operation: ['sendBulk'] } },
+					'Phone numbers, separated by comma, semicolon or newline, at most 100. Each number gets its own text.',
+				displayOptions: { show: { resource: ['message'], operation: ['sendBulk'], '@version': [1] } },
 			},
 
 			// ─────────────────────────── message body ───────────────────────────
@@ -478,6 +623,9 @@ export class SmsTunnel implements INodeType {
 
 		const resource = this.getNodeParameter('resource', 0) as string;
 		const operation = this.getNodeParameter('operation', 0) as string;
+		// Version 2 waits when SMSTunnel's per-minute limit says so, so a long list of items (one text each) gets through.
+		// Version 1 answers as it always did, except Send to Several Recipients (sendToSeveral).
+		const waitForLimit = this.getNode().typeVersion >= 2;
 
 		// As an AI Agent's tool the node only sends one text or reads what is not private (NOT_AS_TOOL).
 		const refusedAsTool = runsAsTool(this) ? NOT_AS_TOOL[resource]?.[operation] : undefined;
@@ -537,6 +685,17 @@ export class SmsTunnel implements INodeType {
 							...(sendAt ? { sendAt } : {}),
 						};
 					} else if (operation === 'sendBulk') {
+						if (waitForLimit) {
+							throw new NodeOperationError(
+								this.getNode(),
+								'Send to Several Recipients is not in version 2 of the SMSTunnel node',
+								{
+									itemIndex: i,
+									description:
+										'Version 2 sends one text per item: put each number in its own item (for example with Split Out) and use Send.',
+								},
+							);
+						}
 						const recipients = parseRecipients(this.getNodeParameter('toBulk', i) as string);
 
 						if (recipients.length === 0) {
@@ -549,17 +708,18 @@ export class SmsTunnel implements INodeType {
 						if (recipients.length > 100) {
 							throw new NodeOperationError(
 								this.getNode(),
-								`Too many recipients (${recipients.length}). The API accepts at most 100 per request — split them into several batches.`,
+								`Too many recipients (${recipients.length}): at most 100 per item. Split the numbers over several items.`,
 								{ itemIndex: i },
 							);
 						}
 
-						endpoint = '/api/v1/sms/send-bulk';
-						body = {
-							to: recipients,
+						// One text per number, each its own POST /api/v1/sms/send.
+						const several = await sendToSeveral(this, i, `${baseUrl}/api/v1/sms/send`, recipients, {
 							message: this.getNodeParameter('message', i) as string,
 							...extra,
-						};
+						});
+						returnData.push({ json: several, pairedItem: { item: i } });
+						continue;
 					} else if (operation === 'send2fa') {
 						endpoint = '/api/v1/sms/send-2fa';
 						body = {
@@ -637,11 +797,9 @@ export class SmsTunnel implements INodeType {
 					...(qs !== undefined ? { qs } : {}),
 				};
 
-				const response = await this.helpers.httpRequestWithAuthentication.call(
-					this,
-					'smsTunnelApi',
-					options,
-				);
+				const response = waitForLimit
+					? await requestWaitingForLimit(this, options, i)
+					: await this.helpers.httpRequestWithAuthentication.call(this, 'smsTunnelApi', options);
 
 				returnData.push({
 					json: response as IDataObject,

@@ -9,7 +9,7 @@ const { ID, nodeOf, run } = require('./harness');
 
 const TOOL_TYPE = 'n8n-nodes-smstunnel.smsTunnelTool';
 // The node versions to check.
-const VERSIONS = [1];
+const VERSIONS = [1, 2];
 const asTool = { type: TOOL_TYPE };
 
 const REFUSED = [
