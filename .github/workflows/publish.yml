@@ -1,0 +1,80 @@
+# Publishes n8n-nodes-smstunnel to npm, with npm provenance, when a GitHub release is published.
+#
+# n8n verifies a community node only when it was published from GitHub Actions with a provenance statement
+# (https://docs.n8n.io/integrations/creating-nodes/deploy/submit-community-nodes/). This workflow uses npm Trusted
+# Publishing (OIDC): no npm token is stored anywhere. It needs npm 11.5.1 or later and Node 22.14.0 or later
+# (https://docs.npmjs.com/trusted-publishers).
+#
+# One-time setup on npmjs.com (see PUBLISHING.md): n8n-nodes-smstunnel → Settings → Trusted Publisher → GitHub
+# Actions: organization or user "narcisbodea", repository "n8n-nodes-smstunnel", workflow filename "publish.yml",
+# no environment, allowed action "npm publish". The first publish must follow within 2 days, or the setup expires.
+#
+# A release: set "version" in package.json and add it to CHANGELOG.md, commit, push, then publish a GitHub release
+# whose tag is that version with a "v" (v1.2.0). This workflow checks the tag against package.json, installs, lints,
+# builds, tests and publishes. A release marked as a pre-release is not published.
+
+name: Publish
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-npm
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to npm with provenance
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The OIDC token for npm Trusted Publishing and for the provenance statement.
+      id-token: write
+
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          # No dependency cache in a release build.
+          package-manager-cache: false
+
+      - name: Use npm 11.5.1 or later (Trusted Publishing)
+        run: |
+          npm install --global npm@^11.5.1
+          npm --version
+
+      - name: Check that the release tag is the package version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if [ "${TAG#v}" != "$VERSION" ]; then
+            echo "::error::The release tag $TAG is not the version in package.json ($VERSION)."
+            exit 1
+          fi
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint (n8n-node lint, the rules of n8n's scanner)
+        run: npm run lint
+
+      - name: Build and test
+        run: npm test
+
+      - name: Publish
+        # RELEASE_MODE lets the prepublishOnly check (n8n-node prerelease) through: npm publish from anywhere else
+        # is refused.
+        run: npm publish --provenance --access public
+        env:
+          RELEASE_MODE: 'true'
