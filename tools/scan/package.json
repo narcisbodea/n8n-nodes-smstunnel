@@ -1,0 +1,9 @@
+{
+  "name": "n8n-nodes-smstunnel-scan",
+  "private": true,
+  "description": "n8n's verification scanner at an exact version, its integrity pinned by package-lock.json. Installed apart from the package (npm ci --ignore-scripts --prefix tools/scan): as a dependency of the package, the scanner's TypeScript 6 (@typescript/old) takes over node_modules/.bin/tsc and n8n-node build fails.",
+  "license": "MIT",
+  "devDependencies": {
+    "@n8n/scan-community-package": "0.44.0"
+  }
+}

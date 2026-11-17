@@ -1,5 +1,5 @@
-# Lint, build and test on every push to main and every pull request. Publishing is publish.yml's job.
-# Actions are pinned to full commit SHAs, as in publish.yml.
+# Lint, build, test and scan on every push to main and every pull request. Publishing is publish.yml's job.
+# Actions are pinned to full commit SHAs and installs run no dependency scripts, as in publish.yml.
 
 name: CI
 
@@ -27,11 +27,19 @@ jobs:
         with:
           node-version: '24'
           cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            tools/scan/package-lock.json
 
-      - run: npm ci
+      - run: npm ci --ignore-scripts
+
+      - run: npm ci --ignore-scripts --prefix tools/scan
 
       - name: Lint (n8n-node lint, the rules of n8n's scanner)
         run: npm run lint
 
       - name: Build and test
         run: npm test
+
+      - name: n8n's verification scanner, local checks
+        run: npm run scan

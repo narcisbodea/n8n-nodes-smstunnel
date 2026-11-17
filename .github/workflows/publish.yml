@@ -76,8 +76,16 @@ jobs:
             exit 1
           fi
 
+      # --ignore-scripts: no dependency runs code at install. None needs to: the only install scripts in the tree are
+      # native add-ons (isolated-vm, ssh2, cpu-features) under @n8n/node-cli's AI packages, which build, lint and
+      # tests never load, and eslint-plugin-n8n-nodes-base's preinstall, `npx only-allow pnpm`, which would fetch code.
       - name: Install
-        run: npm ci
+        run: npm ci --ignore-scripts
+
+      # The scanner lives apart in tools/scan, pinned with its integrity by tools/scan/package-lock.json (as a
+      # dependency of the package its TypeScript 6 would take over node_modules/.bin/tsc).
+      - name: Install n8n's scanner
+        run: npm ci --ignore-scripts --prefix tools/scan
 
       - name: Lint (n8n-node lint, the rules of n8n's scanner)
         run: npm run lint
@@ -139,9 +147,16 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           package-manager-cache: false
 
-      - name: npm 11.21.1 (Trusted Publishing needs 11.5.1 or later)
+      # Exactly npm 11.21.1 (Trusted Publishing needs 11.5.1 or later), checked against its sha512 before it is
+      # installed: npm's tarball bundles its dependencies, so nothing else is fetched.
+      - name: npm 11.21.1, checked against its pinned sha512
+        env:
+          NPM_INTEGRITY: sha512-YTzL6QBEJXyHcTu0JiUc7RKMp+mzlJtl7rGLmERaXUQeFHIMc9atdr6G9M9C8vDWbv40epoTQAzNL2/PtZVDhQ==
         run: |
-          npm install --global npm@11.21.1
+          cd "$RUNNER_TEMP"
+          npm pack npm@11.21.1 --silent > /dev/null
+          node -e "const c=require('crypto'),f=require('fs'); const got='sha512-'+c.createHash('sha512').update(f.readFileSync('npm-11.21.1.tgz')).digest('base64'); if (got!==process.env.NPM_INTEGRITY) { console.error('::error::npm-11.21.1.tgz is not the pinned npm 11.21.1'); process.exit(1); }"
+          npm install --global ./npm-11.21.1.tgz --ignore-scripts
           npm --version
 
       - name: Publish

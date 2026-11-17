@@ -17,6 +17,8 @@ Order matters: the npm Trusted Publisher (step 3) expires if the first publish (
   The untracked `%TEMP%claude-task-start.txt` is a stray file and is not part of the repository.
 - `npm test` (build and unit tests), `npm run lint` (`n8n-node lint`) and `npm run scan` (n8n's scanner,
   `@n8n/scan-community-package` 0.44.0, local checks) pass. `npm run test:e2e` has run against a local SMSTunnel API.
+  To set up a copy: `npm ci --ignore-scripts` and `npm ci --ignore-scripts --prefix tools/scan` (the scanner is
+  pinned apart, in tools/scan, with its own lockfile).
 - Published on npm today: 1.1.0, without provenance; n8n's scanner refuses it for that reason alone.
 
 ## 1. The public GitHub repository
@@ -106,8 +108,11 @@ disallow tokens**, and revoke any npm token that was used to publish from this c
 5. **[Agent, after OK]** Check the result:
 
    ```bash
+   cd D:/ANDROID/n8n-nodes-smstunnel
    npm view n8n-nodes-smstunnel@1.2.0 dist.attestations          # a provenance entry (predicateType https://slsa.dev/provenance/v1)
-   npx --yes @n8n/scan-community-package@0.44.0 n8n-nodes-smstunnel@1.2.0   # provenance, attested GitHub source, lint
+   # n8n's scanner, pinned with its integrity in tools/scan (no npx: nothing fetched unpinned at run time)
+   npm ci --ignore-scripts --prefix tools/scan
+   node tools/scan/node_modules/@n8n/scan-community-package/dist/cli.js n8n-nodes-smstunnel@1.2.0   # provenance, attested GitHub source, lint
    ```
 
    The npm page shows **Built and signed on GitHub Actions**. If the publish job fails with `ENEEDAUTH`, compare the
@@ -147,9 +152,12 @@ for what it asks (and what n8n's list of verified nodes shows: package, display 
   `contact@narboweb.ro`, or change `author.email` in package.json to the npm account's email and release 1.2.1 (steps
   4–5 again). Check also the spam folder of both addresses.
 - **Review time**: up to four weeks (n8n's documentation); n8n emails as the submission moves on. An automated review
-  (n8n's scanner) runs first. If the portal says *tests failed* while
-  `npx @n8n/scan-community-package n8n-nodes-smstunnel@1.2.0` passes, run it with `@beta` as well (n8n's advice on
-  its forum, July 2026). A review stuck in progress: email nodes@n8n.io or ask on n8n's Discord (#community-nodes).
+  (n8n's scanner) runs first. If the portal says *tests failed* while the scanner of step 4.5 passes, n8n's portal may
+  be on another scanner version (n8n's advice on its forum, July 2026, was to try the `beta` one): see which version
+  that is (`npm view @n8n/scan-community-package dist-tags`), pin it in tools/scan
+  (`npm install --ignore-scripts --save-exact --prefix tools/scan @n8n/scan-community-package@<version>`) and run it
+  the same way, rather than through npx. A review stuck in progress: email nodes@n8n.io or ask on n8n's Discord
+  (#community-nodes).
   n8n may refuse nodes that compete with its paid features; this one doesn't.
 
 After verification, owners and admins of an n8n instance (Cloud included) find **SMSTunnel** under **More from the
