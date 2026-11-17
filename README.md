@@ -111,6 +111,20 @@ Example: a reminder the morning before an appointment. **Send**, **To** `{{ $jso
 
 Because the message leaves from your own phone, this keeps working even when the destination has no internet connection.
 
+## Using it as an AI tool
+
+The node can be a tool of n8n's **AI Agent** (connect it to the agent's **Tool** input). As a tool it does only what can't pass on private texts or reach many people at once:
+
+| As an AI tool | Operations |
+| --- | --- |
+| **Allowed** | **Send** (one text, now or with **Send At**), **Get Status**, **Account → Get Usage**, **Device → Get Many**, **Scheduled Text → Get** and **Get Many** |
+| **Refused** | **Get Received** (received texts often hold sign-in codes), **Send 2FA Code**, **Scheduled Text → Cancel**, and **Send to Several Recipients** of version 1 |
+
+The refused operations aren't listed in the tool, and the node stops with a message if one is set anyway. To use them, add SMSTunnel as a normal step of the workflow.
+
+- **Set the recipient yourself.** Put your own number, or an expression from your own data, in **To**, and let the model fill only **Message**, for example `{{ $fromAI('message', 'The text to send', 'string') }}`.
+- **One call is one text.** To confirm each text before it goes out, add a **Human review** step between the agent and this tool ([human-in-the-loop for AI tool calls](https://docs.n8n.io/build/integrate-ai/ai-examples/human-in-the-loop-for-tools/)).
+
 ## Build it with an AI assistant
 
 Paste this into Claude, ChatGPT, Cursor or Copilot and replace the part in brackets. Don't paste your API key into the chat: the prompt doesn't need it.

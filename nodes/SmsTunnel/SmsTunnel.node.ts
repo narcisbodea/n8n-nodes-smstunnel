@@ -120,6 +120,47 @@ function errorJson(error: unknown): IDataObject {
 	return json;
 }
 
+/**
+ * What an AI Agent may not do with this node as its tool, and why: everything else only sends one text, or reads
+ * nothing private (a text's status, the phones, the usage, the texts this key scheduled).
+ */
+const NOT_AS_TOOL: Record<string, Record<string, { name: string; why: string } | undefined> | undefined> = {
+	message: {
+		getReceived: {
+			name: 'Get Received',
+			why: 'Received texts often hold sign-in codes and other private words, and a model can be talked into passing them on.',
+		},
+		send2fa: {
+			name: 'Send 2FA Code',
+			why: 'Sign-in codes belong to your own sign-in flows, not to a model.',
+		},
+		sendBulk: {
+			name: 'Send to Several Recipients',
+			why: 'As a tool, one call sends one text to one person.',
+		},
+	},
+	scheduledText: {
+		cancel: {
+			name: 'Cancel',
+			why: 'A model could cancel the texts you scheduled.',
+		},
+	},
+};
+
+/** Hides an operation from the AI tool's list (n8n's "@tool"; an older n8n shows it, and the run refuses it). */
+const HIDDEN_AS_TOOL = { hide: { '@tool': [true] } };
+
+/**
+ * Whether n8n runs the node as an AI Agent's tool. It always does so under the tool type
+ * (n8n-nodes-smstunnel.smsTunnelTool), however the agent calls it; the context says so as well when the agent calls
+ * the tool directly.
+ */
+function runsAsTool(context: IExecuteFunctions): boolean {
+	const type = String(context.getNode().type ?? '');
+	if ((type.split('.').pop() ?? '').endsWith('Tool')) return true;
+	return typeof context.isToolExecution === 'function' && context.isToolExecution() === true;
+}
+
 export class SmsTunnel implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'SMSTunnel',
@@ -171,6 +212,7 @@ export class SmsTunnel implements INodeType {
 						value: 'getReceived',
 						description: 'Get received SMS synced from your phone (only if sync is on in the app)',
 						action: 'Get received messages',
+						displayOptions: HIDDEN_AS_TOOL,
 					},
 					{
 						name: 'Get Status',
@@ -189,6 +231,7 @@ export class SmsTunnel implements INodeType {
 						value: 'send2fa',
 						description: 'Send a one-time verification code (uses the 2FA quota)',
 						action: 'Send a 2FA code',
+						displayOptions: HIDDEN_AS_TOOL,
 					},
 					{
 						// Display text only. The value stays 'sendBulk' because saved workflows store it.
@@ -196,6 +239,7 @@ export class SmsTunnel implements INodeType {
 						value: 'sendBulk',
 						description: 'Send the same SMS to up to 100 recipients in one request',
 						action: 'Send an SMS to several recipients',
+						displayOptions: HIDDEN_AS_TOOL,
 					},
 				],
 				default: 'send',
@@ -244,6 +288,7 @@ export class SmsTunnel implements INodeType {
 						value: 'cancel',
 						description: 'Cancel a scheduled text before it goes out',
 						action: 'Cancel a scheduled text',
+						displayOptions: HIDDEN_AS_TOOL,
 					},
 					{
 						name: 'Get',
@@ -433,6 +478,18 @@ export class SmsTunnel implements INodeType {
 
 		const resource = this.getNodeParameter('resource', 0) as string;
 		const operation = this.getNodeParameter('operation', 0) as string;
+
+		// As an AI Agent's tool the node only sends one text or reads what is not private (NOT_AS_TOOL).
+		const refusedAsTool = runsAsTool(this) ? NOT_AS_TOOL[resource]?.[operation] : undefined;
+		if (refusedAsTool) {
+			throw new NodeOperationError(
+				this.getNode(),
+				`${refusedAsTool.name} is not available when SMSTunnel is used as an AI tool`,
+				{
+					description: `${refusedAsTool.why} To use ${refusedAsTool.name}, add SMSTunnel as a normal step of the workflow instead of as a tool of an AI Agent.`,
+				},
+			);
+		}
 
 		for (let i = 0; i < items.length; i++) {
 			try {

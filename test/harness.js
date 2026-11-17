@@ -12,11 +12,11 @@ const KEY = 'sk_' + 'live_' + '0123456789abcdef0123456789abcdef';
 const ID = '6735a0c4e1d9e1b7b54cf994';
 const BASE = 'https://smstunnel.test';
 
-/** The node as a workflow stores it; typeVersion is the node version the run uses. */
-const nodeOf = (typeVersion) => ({
+/** The node as a workflow stores it: typeVersion is the node version the run uses; as an AI tool, its type ends in Tool. */
+const nodeOf = (typeVersion, type = 'n8n-nodes-smstunnel.smsTunnel') => ({
 	id: 'n1',
 	name: 'SMSTunnel',
-	type: 'n8n-nodes-smstunnel.smsTunnel',
+	type,
 	typeVersion,
 	position: [0, 0],
 	parameters: {},
@@ -45,10 +45,12 @@ async function run(
 		version = 1,
 		baseUrl = `${BASE}/`,
 		credentials,
+		type,
+		toolExecution = false,
 	} = {},
 ) {
 	const calls = [];
-	const node = nodeOf(version);
+	const node = nodeOf(version, type);
 	const creds = credentials ?? { apiKey: KEY, baseUrl };
 	const context = {
 		getInputData: () => Array.from({ length: items }, () => ({ json: {} })),
@@ -62,6 +64,7 @@ async function run(
 		getNode: () => node,
 		getTimezone: () => timeZone,
 		continueOnFail: () => continueOnFail,
+		isToolExecution: () => toolExecution,
 		helpers: {
 			async httpRequestWithAuthentication(credentialsType, options) {
 				assert.equal(credentialsType, 'smsTunnelApi');
