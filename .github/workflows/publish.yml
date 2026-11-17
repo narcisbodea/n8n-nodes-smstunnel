@@ -85,12 +85,26 @@ jobs:
       - name: Build and test
         run: npm test
 
+      # Pack and publish run with --ignore-scripts, so prepublishOnly (n8n-node prerelease) never runs here. It checks
+      # nothing itself: it only refuses an npm publish made outside n8n-node release, whose real checks are the lint
+      # and build above and n8n's scanner here (its local checks: the source and the files to publish).
+      - name: n8n's verification scanner, local checks
+        run: npm run scan
+
       - name: Pack
         id: pack
         run: |
           TARBALL="$(npm pack --ignore-scripts --json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8'))[0].filename")"
           sha256sum "$TARBALL"
           echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+
+      # The files of n8n.nodes and n8n.credentials, their icons and codex, README, LICENSE and package.json are in;
+      # nothing else is (no tests, sources, .env, maps); the version is the tag's; no runtime dependencies.
+      - name: Check the package
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: node scripts/check-package.mjs "$TARBALL" "$TAG"
 
       - name: Hand the package to the publish job
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
