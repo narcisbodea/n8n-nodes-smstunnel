@@ -26,19 +26,21 @@
   },
   "main": "index.js",
   "scripts": {
-    "build": "npx rimraf dist && tsc && gulp build:icons",
-    "dev": "tsc --watch",
+    "build": "n8n-node build",
+    "build:watch": "tsc --watch",
+    "dev": "n8n-node dev",
     "format": "prettier nodes credentials --write",
-    "lint": "eslint nodes credentials package.json",
-    "lintfix": "eslint nodes credentials package.json --fix",
-    "test": "npm run build && node --test test/SmsTunnel.node.test.js",
-    "prepublishOnly": "npm run build"
+    "lint": "n8n-node lint",
+    "lint:fix": "n8n-node lint --fix",
+    "test": "npm run build && node --test \"test/*.test.js\"",
+    "prepublishOnly": "n8n-node prerelease"
   },
   "files": [
     "dist"
   ],
   "n8n": {
     "n8nNodesApiVersion": 1,
+    "strict": true,
     "credentials": [
       "dist/credentials/SmsTunnelApi.credentials.js"
     ],
@@ -47,14 +49,11 @@
     ]
   },
   "devDependencies": {
+    "@n8n/node-cli": "^0.57.3",
     "@types/node": "^20.19.43",
-    "@typescript-eslint/parser": "^7.15.0",
-    "eslint": "^8.57.0",
-    "eslint-plugin-n8n-nodes-base": "^1.16.1",
-    "gulp": "^5.0.0",
+    "eslint": "^9.39.4",
     "n8n-workflow": "*",
     "prettier": "^3.3.2",
-    "rimraf": "^5.0.7",
     "typescript": "^5.5.3"
   },
   "peerDependencies": {
