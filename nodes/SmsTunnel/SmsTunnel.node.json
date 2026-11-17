@@ -1,0 +1,18 @@
+{
+	"node": "n8n-nodes-smstunnel",
+	"nodeVersion": "1.0",
+	"codexVersion": "1.0",
+	"categories": ["Communication"],
+	"resources": {
+		"credentialDocumentation": [
+			{
+				"url": "https://smstunnel.io/integrations/n8n/"
+			}
+		],
+		"primaryDocumentation": [
+			{
+				"url": "https://smstunnel.io/integrations/n8n/"
+			}
+		]
+	}
+}

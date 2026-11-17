@@ -2,6 +2,7 @@ import type {
 	IAuthenticateGeneric,
 	ICredentialTestRequest,
 	ICredentialType,
+	Icon,
 	INodeProperties,
 } from 'n8n-workflow';
 
@@ -9,6 +10,12 @@ export class SmsTunnelApi implements ICredentialType {
 	name = 'smsTunnelApi';
 
 	displayName = 'SMSTunnel API';
+
+	// The node's icon, which reads well on both themes. The path is relative to dist/credentials/.
+	icon: Icon = {
+		light: 'file:../nodes/SmsTunnel/smstunnel.svg',
+		dark: 'file:../nodes/SmsTunnel/smstunnel.svg',
+	};
 
 	// The credentials' "docs" link in n8n: the integration page, which explains this API key and Base URL.
 	// (https://smstunnel.io/docs/api, used up to 1.0.3, is a 404.)

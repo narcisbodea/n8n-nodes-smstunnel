@@ -6,8 +6,9 @@ import type {
 	INodeExecutionData,
 	INodeType,
 	INodeTypeDescription,
+	JsonObject,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
+import { NodeApiError, NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 
 /**
  * Splits a comma/semicolon/newline separated list of phone numbers into a clean array.
@@ -121,7 +122,8 @@ export class SmsTunnel implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'SMSTunnel',
 		name: 'smsTunnel',
-		icon: 'file:smstunnel.svg',
+		// One icon that reads well on both themes (white bubble on a blue tile).
+		icon: { light: 'file:smstunnel.svg', dark: 'file:smstunnel.svg' },
 		group: ['output'],
 		version: 1,
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
@@ -129,8 +131,9 @@ export class SmsTunnel implements INodeType {
 		defaults: {
 			name: 'SMSTunnel',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'smsTunnelApi',
@@ -162,23 +165,10 @@ export class SmsTunnel implements INodeType {
 				displayOptions: { show: { resource: ['message'] } },
 				options: [
 					{
-						name: 'Send',
-						value: 'send',
-						description: 'Send an SMS to a single recipient, now or at a later time',
-						action: 'Send an SMS',
-					},
-					{
-						// Display text only. The value stays 'sendBulk' because saved workflows store it.
-						name: 'Send to Several Recipients',
-						value: 'sendBulk',
-						description: 'Send the same SMS to up to 100 recipients in one request',
-						action: 'Send an SMS to several recipients',
-					},
-					{
-						name: 'Send 2FA Code',
-						value: 'send2fa',
-						description: 'Send a one-time verification code (uses the 2FA quota)',
-						action: 'Send a 2FA code',
+						name: 'Get Received',
+						value: 'getReceived',
+						description: 'Get received SMS synced from your phone (only if sync is on in the app)',
+						action: 'Get received messages',
 					},
 					{
 						name: 'Get Status',
@@ -187,10 +177,23 @@ export class SmsTunnel implements INodeType {
 						action: 'Get a message status',
 					},
 					{
-						name: 'Get Received',
-						value: 'getReceived',
-						description: 'Get received SMS synced from your phone (only if sync is on in the app)',
-						action: 'Get received messages',
+						name: 'Send',
+						value: 'send',
+						description: 'Send an SMS to a single recipient, now or at a later time',
+						action: 'Send an SMS',
+					},
+					{
+						name: 'Send 2FA Code',
+						value: 'send2fa',
+						description: 'Send a one-time verification code (uses the 2FA quota)',
+						action: 'Send a 2FA code',
+					},
+					{
+						// Display text only. The value stays 'sendBulk' because saved workflows store it.
+						name: 'Send to Several Recipients',
+						value: 'sendBulk',
+						description: 'Send the same SMS to up to 100 recipients in one request',
+						action: 'Send an SMS to several recipients',
 					},
 				],
 				default: 'send',
@@ -569,7 +572,11 @@ export class SmsTunnel implements INodeType {
 					});
 					continue;
 				}
-				throw error;
+				// The node's own checks stay as they are; anything else becomes a NodeApiError (one that already
+				// is comes back unchanged).
+				throw error instanceof NodeOperationError
+					? error
+					: new NodeApiError(this.getNode(), error as JsonObject, { itemIndex: i });
 			}
 		}
 
