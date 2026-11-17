@@ -2,16 +2,24 @@
 #
 # n8n verifies a community node only when it was published from GitHub Actions with a provenance statement
 # (https://docs.n8n.io/integrations/creating-nodes/deploy/submit-community-nodes/). This workflow uses npm Trusted
-# Publishing (OIDC): no npm token is stored anywhere. It needs npm 11.5.1 or later and Node 22.14.0 or later
-# (https://docs.npmjs.com/trusted-publishers).
+# Publishing (OIDC): no npm token is stored anywhere (https://docs.npmjs.com/trusted-publishers).
 #
-# One-time setup on npmjs.com (see PUBLISHING.md): n8n-nodes-smstunnel → Settings → Trusted Publisher → GitHub
-# Actions: organization or user "narcisbodea", repository "n8n-nodes-smstunnel", workflow filename "publish.yml",
-# no environment, allowed action "npm publish". The first publish must follow within 2 days, or the setup expires.
+# Two jobs:
+# - build (read-only): checks the release, installs, lints, builds, tests and packs the .tgz, which it hands on as
+#   an artifact. It can't publish: it has no id-token.
+# - publish (GitHub environment "npm", which waits for the owner's approval): downloads that .tgz and publishes it,
+#   nothing else: no checkout, no install, no build, no package scripts. npm signs the provenance with this run's
+#   repository, commit and workflow (the same for both jobs) and the .tgz's own sha512.
 #
-# A release: set "version" in package.json and add it to CHANGELOG.md, commit, push, then publish a GitHub release
-# whose tag is that version with a "v" (v1.2.0). This workflow checks the tag against package.json, installs, lints,
-# builds, tests and publishes. A release marked as a pre-release is not published.
+# One-time setup (PUBLISHING.md):
+# - GitHub → Settings → Environments → "npm": required reviewer (the owner), deployment tags "v*".
+# - npmjs.com → n8n-nodes-smstunnel → Settings → Trusted Publisher → GitHub Actions: user "narcisbodea", repository
+#   "n8n-nodes-smstunnel", workflow "publish.yml", environment "npm", allowed action "npm publish".
+#
+# A release: set "version" in package.json and add it to CHANGELOG.md, merge to main, then publish a GitHub release
+# from main whose tag is "v" + that version (v1.2.0). A pre-release is not published.
+#
+# Every action is pinned to a full commit SHA (looked up with git ls-remote and checked with the GitHub API).
 
 name: Publish
 
@@ -27,39 +35,44 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: Publish to npm with provenance
+  build:
+    name: Check, build, test and pack
     if: ${{ !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # The OIDC token for npm Trusted Publishing and for the provenance statement.
-      id-token: write
-
+    outputs:
+      tarball: ${{ steps.pack.outputs.tarball }}
     steps:
-      - name: Check out the release tag
-        uses: actions/checkout@v6
+      - name: Check out the release tag, with the history of main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Node.js 24
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
           # No dependency cache in a release build.
           package-manager-cache: false
 
-      - name: Use npm 11.5.1 or later (Trusted Publishing)
-        run: |
-          npm install --global npm@^11.5.1
-          npm --version
-
-      - name: Check that the release tag is the package version
+      - name: Release gate (tag = v + package.json version, commit on main)
         env:
           TAG: ${{ github.event.release.tag_name }}
         run: |
           VERSION="$(node -p "require('./package.json').version")"
-          if [ "${TAG#v}" != "$VERSION" ]; then
-            echo "::error::The release tag $TAG is not the version in package.json ($VERSION)."
+          if [ "$TAG" != "v$VERSION" ]; then
+            echo "::error::The release tag $TAG is not v$VERSION, the version in package.json."
+            exit 1
+          fi
+          if [ "$(git rev-parse HEAD)" != "$GITHUB_SHA" ]; then
+            echo "::error::The tag $TAG no longer points at the commit this release was made from ($GITHUB_SHA)."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::The commit of $TAG is not on main. Release from main."
             exit 1
           fi
 
@@ -72,9 +85,52 @@ jobs:
       - name: Build and test
         run: npm test
 
+      - name: Pack
+        id: pack
+        run: |
+          TARBALL="$(npm pack --ignore-scripts --json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8'))[0].filename")"
+          sha256sum "$TARBALL"
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+
+      - name: Hand the package to the publish job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package
+          path: ${{ steps.pack.outputs.tarball }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish to npm with provenance
+    needs: build
+    runs-on: ubuntu-latest
+    # Waits for the owner's approval (required reviewer); only tags v* may deploy to it.
+    environment: npm
+    permissions:
+      contents: read
+      # The OIDC token for npm Trusted Publishing and for the provenance statement.
+      id-token: write
+    steps:
+      - name: Get the package from the build job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: package
+          path: package
+          digest-mismatch: error
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: npm 11.21.1 (Trusted Publishing needs 11.5.1 or later)
+        run: |
+          npm install --global npm@11.21.1
+          npm --version
+
       - name: Publish
-        # RELEASE_MODE lets the prepublishOnly check (n8n-node prerelease) through: npm publish from anywhere else
-        # is refused.
-        run: npm publish --provenance --access public
         env:
-          RELEASE_MODE: 'true'
+          TARBALL: ${{ needs.build.outputs.tarball }}
+        run: npm publish "package/$TARBALL" --provenance --access public --ignore-scripts
