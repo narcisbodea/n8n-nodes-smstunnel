@@ -103,8 +103,9 @@ disallow tokens**, and revoke any npm token that was used to publish from this c
      is the tag's); it hands the `.tgz` on as an artifact;
    - job **publish** (environment `npm`): waits for approval.
 4. **[Owner]** GitHub → **Actions** → the **Publish** run → **Review deployments** → `npm` → **Approve and deploy**.
-   The job runs `npm publish n8n-nodes-smstunnel-1.2.0.tgz --provenance --access public --ignore-scripts` with
-   npm 11.21.1, authenticated by OIDC.
+   The job runs `npm publish ./package/n8n-nodes-smstunnel-1.2.0.tgz --provenance --access public --ignore-scripts`
+   with npm 11.21.1, authenticated by OIDC. The `./` matters: without it npm reads `package/<file>.tgz` as a GitHub
+   repository (user/repo) and fails with git error 128, as the first 1.2.0 run did.
 5. **[Agent, after OK]** Check the result:
 
    ```bash
@@ -117,6 +118,9 @@ disallow tokens**, and revoke any npm token that was used to publish from this c
 
    The npm page shows **Built and signed on GitHub Actions**. If the publish job fails with `ENEEDAUTH`, compare the
    Trusted Publisher fields (step 3) with the repository, `publish.yml` and `npm`, exactly.
+
+   On Windows, run the scanner from PowerShell, which uses Windows' own `tar.exe`. Under Git Bash, GNU tar reads
+   `C:\…` as a remote host, and the scanner stops at *Could not fetch source* although the package is fine.
 
 ## 5. Submit to n8n for verification (Creator Portal)
 
