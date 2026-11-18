@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.2.0] - unreleased
+## [1.2.0] - 2026-11-18
 
 Ready for n8n's verified community nodes (installable on n8n Cloud once n8n has verified it). Needs n8n 1.85 or
 later (March 2025): an older n8n can't load this version; stay on 1.1.0 there.
