@@ -159,7 +159,9 @@ jobs:
           npm install --global ./npm-11.21.1.tgz --ignore-scripts
           npm --version
 
+      # "./" is needed: npm reads "package/<file>.tgz" as a GitHub shorthand (user/repo) and runs git ls-remote
+      # on github.com/package/<file>.tgz instead of publishing the file.
       - name: Publish
         env:
           TARBALL: ${{ needs.build.outputs.tarball }}
-        run: npm publish "package/$TARBALL" --provenance --access public --ignore-scripts
+        run: npm publish "./package/$TARBALL" --provenance --access public --ignore-scripts
